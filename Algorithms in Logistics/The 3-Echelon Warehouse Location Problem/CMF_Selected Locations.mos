@@ -1,0 +1,215 @@
+model "Cost Minimal Flow"
+  uses "mmxprs","mmsystem","mmjobs"
+
+! ==============================================================================
+! Define and read the problem parameters
+! ==============================================================================
+declarations
+  ! Data file name
+  filename: string
+end-declarations
+
+! Read the name of the dataset
+! ------------------------------------------------------------------------------
+initializations from "bin:shmem:CMF"
+  filename as "FileName"
+end-initializations
+
+declarations
+  ! Number of postcode districts
+  nbDistricts: integer
+  ! Number of potential locations
+  nbLocations: integer
+  ! Number of suppliers
+  nbSuppliers: integer
+  ! Number of product groups
+  nbProductGroups: integer
+  ! Number of vehicle types
+  nbVehicleTypes: integer
+end-declarations
+
+! Read the number of customers and locations from the file
+initializations from filename
+  nbDistricts nbSuppliers nbProductGroups nbVehicleTypes
+end-initializations
+
+! All districts are potential locations
+nbLocations := nbDistricts
+
+declarations
+  ! Set of potential locations
+  Locations = 1..nbLocations
+  ! Set of customers
+  Customers = 1..nbDistricts
+  ! Set of suppliers
+  Suppliers = 1..nbSuppliers
+  ! Set of product groups
+  Products = 1..nbProductGroups
+  ! Set of vehicle types
+  Vehicles = 1..nbVehicleTypes
+  
+  ! Vector of district ids
+  DistrictId: array(Customers) of string
+  ! The annual district demand in kilograms per product group
+  Demand: array(Customers, Products) of real
+  
+  ! Setup costs for warehouses and cross-docks
+  SetupWarehouses: array(Locations) of integer
+  SetupCrossDocks: array(Locations) of integer
+  
+  ! Vector of supplier ids
+  SupplierId: array(Suppliers) of integer
+  ! Vector of supplier product groups; recall that each supplier only provides one product group
+  SupplierProductGroup: array(Suppliers) of integer
+  ! Vector of supplier capacity given in kilograms per year
+  SupplierCapacity: array(Suppliers) of real
+  ! Vector of supplier vehicle types
+  SupplierVehicleType: array(Suppliers) of integer
+  
+  ! Distance matrix between customers and locations in miles 
+  Distance: array(Customers,Locations) of real
+  ! Distance matrix between locations and suppliers in miles
+  DistanceSupplier: array(Locations,Suppliers) of real
+
+  
+  ! Vehicle related data. The vehicles are indexed 1, 2, and 3, where 1 stands 
+  ! for 18t trucks, 2 for 7.5t lorries, and 3 for 3.5t vans.
+  ! The vehicle capacity in tonnes
+  VehicleCapacity: array(Vehicles) of real
+  ! The overall cost in pounds per mile travelled
+  VehicleCostPerMileOverall: array(Vehicles) of real
+  ! The overall cost in pounds per mile and tonne transported
+  VehicleCostPerMileAndTonneOverall: array(Vehicles) of real
+  ! The CO2 emission in kilograms per mile and tonne transported
+  VehicleCO2PerMileAndTonne: array(Vehicles) of real
+  
+  ! Allocations from warehouses to postcode districts(customers)
+  x : array(Locations,Customers) of mpvar
+  ! The amount allocated from warehouses to postcode districts(customers)
+  w2p:array(Locations,Customers,Products) of mpvar
+  ! The amount allocated from suppliers to cross-docks
+  s2c:array(Suppliers,Locations) of mpvar
+  ! The amount allocated from suppliers to warehouses
+  s2w:array(Suppliers,Locations) of mpvar
+  ! The amount allocated from cross-docks to warehouses
+  c2w:array(Locations,Locations,Products) of mpvar
+  ! The amount allocated from wareshouses to warehouses
+  w2w:array(Locations,Locations,Products) of mpvar
+
+  
+  
+  ! Status messages
+  status:array({XPRS_OPT,XPRS_UNF,XPRS_INF,XPRS_UNB,XPRS_OTH}) of string
+end-declarations
+
+! Read data
+initializations from filename
+  DistrictId
+  SetupWarehouses SetupCrossDocks
+  SupplierId SupplierProductGroup SupplierCapacity SupplierVehicleType
+  VehicleCapacity VehicleCostPerMileOverall VehicleCostPerMileAndTonneOverall
+  VehicleCO2PerMileAndTonne
+  Demand as "DistrictDemand"
+  Distance as "DistanceDistrictDistrict"
+  DistanceSupplier as "DistanceDistrictSupplier"
+end-initializations
+
+! Set the status messages
+status::([XPRS_OPT,XPRS_UNF,XPRS_INF,XPRS_UNB,XPRS_OTH])["Optimum found","Unfinished","Infeasible","Unbounded","Failed"]
+
+declarations
+  !the number id of the given locations for warehouses
+  W:set of integer
+  !the number id of the given Locations for cross-docks
+  D:set of integer
+end-declarations
+
+initializations from "bin:shmem:CMF"
+  D as "Selectedcross-docks"
+  W as "Selectedwarehouses"
+end-initializations
+
+
+!construct the matrix about the product group of the supplier
+declarations
+  SPG: array(Suppliers,Products) of integer
+end-declarations
+
+forall(s in Suppliers) do
+  SPG(s, SupplierProductGroup(s)) := 1 
+end-do
+
+
+
+! Single sourcing constraints
+forall(w in W,c in Customers) x(w,c) is_binary
+
+! Every customer must be allocated to a selected Warehouse
+forall(c in Customers)
+  sum(w in W) x(w,c)= 1
+  
+
+!The amount allocated from warehouse to customer must satisfy the allocation
+forall(w in W,c in Customers,p in Products)
+  w2p(w,c,p) <= x(w,c)*MAX_REAL
+
+  
+!Customer: The amount allocated from warehouse to customer must be satisfied the demand
+forall(c in Customers,p in Products)
+  sum(w in W) w2p(w,c,p) >= Demand(c,p)
+
+!Supplier: The amount from the supplier to the cross-docks and warehouses <= the capacity of this supplier
+forall(s in Suppliers) do
+  sum(cd in D) s2c(s,cd) + sum(w in W) s2w(s,w) <= SupplierCapacity(s)
+end-do
+
+!Cross-dock: The amount delivered from the cross-docks must <= the amount delivered to the cross-docks
+forall(cd in D,p in Products) do
+  sum(w in W) c2w(cd,w,p) <= sum(s in Suppliers) s2c(s,cd)*SPG(s,p) 
+end-do
+
+!Warehouse: The amount delivered from the warehouse must <= the amount delivered to this warehouse
+forall(w in W,p in Products) do
+  sum(tw in W) w2w(w,tw,p) + sum(c in Customers) w2p(w,c,p) <= sum(fw in W) w2w(fw,w,p) + sum(cd in D) c2w(cd,w,p) + sum(s in Suppliers) s2w(s,w)*SPG(s,p)
+end-do
+
+
+!The sum of transportation cost from suppliers to cross-docks/warehouses
+!The suppliers only for 7.5t
+tc_s2c_l := sum(s in Suppliers, cd in D|SupplierVehicleType(s)=2) (s2c(s,cd)*0.001)*VehicleCostPerMileAndTonneOverall(2)*DistanceSupplier(cd,s)
+tc_s2w_l := sum(s in Suppliers, w in W|SupplierVehicleType(s)=2) (s2w(s,w)*0.001)*VehicleCostPerMileAndTonneOverall(2)*DistanceSupplier(w,s)
+tc_s2c_h := sum(s in Suppliers, cd in D|SupplierVehicleType(s)=1) (s2c(s,cd)*0.001)*(VehicleCostPerMileAndTonneOverall(1))*DistanceSupplier(cd,s)
+tc_s2w_h := sum(s in Suppliers, w in W|SupplierVehicleType(s)=1) (s2w(s,w)*0.001)*(VehicleCostPerMileAndTonneOverall(1))*DistanceSupplier(w,s)
+tc_s2c := tc_s2c_h + tc_s2c_l
+tc_s2w := tc_s2w_h + tc_s2w_l
+
+!The sum of transportation cost from cross-docks to warehouses (using 18t)
+tc_c2w := sum(cd in D, w in W, p in Products) (c2w(cd,w,p)*0.001)*VehicleCostPerMileAndTonneOverall(1)*Distance(cd,w)
+!The sum of transportation cost from warehouses to warehouses (using 18t)
+tc_w2w := sum(fw in W, tw in W, p in Products) (w2w(fw,tw,p)*0.001)*VehicleCostPerMileAndTonneOverall(1)*Distance(fw,tw)
+!The sum of transportation cost from warehouses to customers (using 3.5t)
+tc_w2p := sum(w in W, c in Customers, p in Products) (w2p(w,c,p)*0.001)*VehicleCostPerMileAndTonneOverall(3)*Distance(w,c)
+
+
+total_tc := tc_w2p + tc_w2w + tc_c2w + tc_s2w + tc_s2c
+sc := sum(w in W) SetupWarehouses(w) + sum(cd in D) SetupCrossDocks(cd)
+cost := 2*total_tc*20 + sc
+minimise(cost)
+
+! ==============================================================================
+! Save the results to the main memory
+! We can't use Mosel functions in an initializations block, so we have to save 
+! their values first in separate variables.
+! ==============================================================================
+total_cost := getobjval
+probstat := getprobstat
+
+! Now write the results to the virtual file
+initializations to "bin:shmem:CMF"
+  total_cost as "TotalCost"
+  probstat as "ProblemStatus"
+end-initializations
+
+end-model
+
+

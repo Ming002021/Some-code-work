@@ -1,0 +1,137 @@
+model "WLP with multiple time periods and budget constraints"
+  uses "mmxprs"
+
+! ============================================================================
+! Reading problem parameters
+! ============================================================================
+filename := "DWLPB_50_20_5.txt"
+ 
+
+declarations
+  ! Number of customers
+  n: integer
+  ! Number of potential locations
+  m: integer
+  ! Number of time periods
+  T: integer
+  ! Flag to indicate whether the data file contains coordinates
+  hasCoords: integer
+end-declarations
+
+! Read the number of customers, locations, time periods and the coordinates' flag
+initializations from filename
+  m n T hasCoords
+end-initializations
+
+declarations
+  ! Set of potential locations
+  Locations = 1..m
+  ! Set of customers
+  Customers = 1..n
+  ! Set of suppliers
+  TimePeriods = 1..T
+
+  ! The budget for building facilities
+  Budget: array(Locations) of real
+
+  ! Matrix of customer demands at each time period
+  Demand: array(Customers,TimePeriods) of real
+  ! Matrix of setup costs for warehouses at each time period
+  Setup: array(Locations,TimePeriods) of real
+  ! Matrix of shipping costs between customers and warehouse locations
+  Cost: array(Customers,Locations,TimePeriods) of real
+  ! Matrix of operating costs for warehouse at each time period
+  Operate: array(Locations,TimePeriods) of real
+
+  ! Location variables: in which time period, where to build a warehouse
+  y: array(Locations,TimePeriods) of mpvar
+  ! Allocation variables
+  x: array(Customers,Locations,TimePeriods) of mpvar
+  unspent: array(TimePeriods) of mpvar
+end-declarations
+
+ 
+  ! Read data
+ initializations from filename
+   Demand Setup Cost Operate Budget
+ end-initializations
+
+ 
+
+ ! ============================================================================
+ ! Formulate the model
+ ! ============================================================================
+
+! Binary restrictions: Build a warehouse at location j in time period or not
+forall(j in Locations,t in TimePeriods) y(j,t) is_binary
+
+! Single sourcing constraints
+forall(i in Customers, j in Locations, t in TimePeriods) x(i,j,t) is_binary
+
+! Every customer must be allocated to a location at each period
+forall(i in Customers, t in TimePeriods)
+  sum(j in Locations) x(i,j,t) <=1
+
+! Disaggregated allocation constraints for allocation only to locations with a facility
+
+forall(j in Locations, t in TimePeriods) do
+  forall(i in Customers)
+    x(i,j,t)<=y(j,t)
+end-do
+
+ ! Once the warehouse is located at j in time period t, it is not avaliable to build a warehouse at location j in the next period
+forall(t in TimePeriods|t>1) do
+  forall(j in Locations) do
+    if (y(j,t-1)=1 ) then y(j,t)=0
+    end-if
+  end-do
+end-do
+
+!The unspent amount will be carried over to the next period with an interest rate.
+
+forall(t in 1..(T-1)) do
+   
+  unspent(t)=Budget(t)-sum(j in Locations) Setup(j,t)*y(j,t)
+  if(unspent(t)>0) then
+    Budget(t+1)=Budget(t+1)+unspent(t)*1.03
+  end-if
+end-do
+
+! Budget constraint
+forall(t in TimePeriods)
+  sum(j in Locations) Setup(j,t)*y(j,t) <= Budget (t)
+
+ 
+
+
+
+
+
+! Objective function: sum of setup and transportation costs
+
+ServiceCost:= sum(i in Customers, j in Locations, t in TimePeriods) x(i,j,t)*Cost(i,j,t)*
+
+
+OperateCost:=0.0
+forall(j in Locations) do
+  total_OperateCost:=0.0
+  forall(t in TimePeriods) do
+    if (y(j,t)=1) then
+      forall(tc in t..T) 
+        total_OperateCost += Operate(j,t)
+    end-if
+  end-do
+  OperateCost += total_OperateCost
+end-do
+        
+Obj:= ServiceCost+ OperateCost       
+ 
+
+
+! Solve the problem
+minimize(Obj)
+
+
+end-model
+
+

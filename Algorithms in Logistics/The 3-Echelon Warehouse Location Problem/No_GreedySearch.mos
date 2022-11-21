@@ -1,0 +1,227 @@
+model "The 3-Echelon Warehouse Location Problem"
+uses "mmxprs","mmsystem","mmjobs"
+forward function computeTotalCost(YW: set of string, YC: set of string) : real
+! ============================================================================
+! Reading problem parameters
+! ============================================================================
+filename := "CaseStudyData.txt"; 
+
+declarations
+  ! Number of postcode districts
+  nbDistricts: integer
+  ! Number of potential locations
+  nbLocations: integer
+  ! Number of suppliers
+  nbSuppliers: integer
+  ! Number of product groups
+  nbProductGroups: integer
+  ! Number of vehicle types
+  nbVehicleTypes: integer
+end-declarations
+
+! Read the various numbers from the file
+initializations from filename
+  nbDistricts nbSuppliers nbProductGroups nbVehicleTypes
+end-initializations
+
+! All districts are potential locations
+nbLocations := nbDistricts
+
+declarations
+  ! Set of potential locations
+  Locations = 1..nbLocations
+  ! Set of customers
+  Customers = 1..nbDistricts
+  ! Set of suppliers
+  Suppliers = 1..nbSuppliers
+  ! Set of product groups
+  Products = 1..nbProductGroups
+  ! Set of vehicle types
+  Vehicles = 1..nbVehicleTypes
+  
+  ! Vector of district ids
+  DistrictId: array(Customers) of string
+  ! The annual district demand in kilograms per product group
+  Demand: array(Customers, Products) of real
+  
+  ! Vector of supplier ids
+  SupplierId: array(Suppliers) of integer
+  ! Vector of supplier product groups; recall that each supplier only provides one product group
+  SupplierProductGroup: array(Suppliers) of integer
+  ! Vector of supplier capacity given in kilograms per year
+  SupplierCapacity: array(Suppliers) of real
+  ! Vector of supplier vehicle types
+  SupplierVehicleType: array(Suppliers) of integer
+  
+  ! Setup costs for warehouses and cross-docks
+  SetupWarehouses: array(Locations) of integer
+  SetupCrossDocks: array(Locations) of integer
+  
+  ! Distance matrix between customers and locations in miles 
+  Distance: array(Customers,Locations) of real
+  ! Distance matrix between locations and suppliers in miles
+  DistanceSupplier: array(Locations,Suppliers) of real
+
+  ! Vehicle related data. The vehicles are indexed 1, 2, and 3, where 1 stands 
+  ! for 18t trucks, 2 for 7.5t lorries, and 3 for 3.5t vans.
+  ! The vehicle capacity in tonnes
+  VehicleCapacity: array(Vehicles) of real
+  ! The overall cost in pounds per mile travelled
+  VehicleCostPerMileOverall: array(Vehicles) of real
+  ! The overall cost in pounds per mile and tonne transported
+  VehicleCostPerMileAndTonneOverall: array(Vehicles) of real
+  ! The CO2 emission in kilograms per mile and tonne transported
+  VehicleCO2PerMileAndTonne: array(Vehicles) of real
+end-declarations
+
+! Read data
+initializations from filename
+  DistrictId
+  SetupWarehouses SetupCrossDocks
+  SupplierId SupplierProductGroup SupplierCapacity SupplierVehicleType
+  VehicleCapacity VehicleCostPerMileOverall VehicleCostPerMileAndTonneOverall
+  VehicleCO2PerMileAndTonne
+  Demand as "DistrictDemand"
+  Distance as "DistanceDistrictDistrict"
+  DistanceSupplier as "DistanceDistrictSupplier"
+end-initializations
+
+
+! ==================================================================================================
+! Data preparation
+! ==================================================================================================
+
+declarations
+  YW,YW_min,YW_now: set of string
+  YC,YC_min,YC_now: set of string
+  CustomerSet: set of string
+end-declarations
+
+min_cost:=MAX_REAL
+min_cost_pre:=MAX_REAL
+
+YW_min:={}
+YC_min:={}
+CustomerSet:={}
+forall(i in Customers) do
+  CustomerSet:=CustomerSet+{DistrictId(i)}
+end-do
+start := gettime
+forall(iter in 1..4)do
+
+  YW:=YW_min
+  YC:=YC_min
+
+
+  forall(i in CustomerSet-YW-YC_min) do
+    YW := YW+{i}
+    writeln("start: ",YW)
+    r := computeTotalCost(YW,YC)
+    if (r<min_cost) then
+      min_cost:=r
+      YW_min:=YW
+      writeln("iter",iter, "i",i,"cost: ",min_cost)
+    end-if
+    YW:=YW-{i}
+  end-do
+  writeln("iter",iter, "YWmin",YW_min,"cost: ",min_cost)
+  
+  forall(j in CustomerSet-YC-YW_min) do
+    YC := YC+{j}
+     writeln("start: ",YC)
+    r := computeTotalCost(YW_min,YC)
+    if (r<min_cost) then
+      min_cost:=r
+      YC_min:=YC
+      writeln("iter",iter, "j",j,"cost: ",min_cost)
+    end-if
+    YC:=YC-{j}
+  end-do
+
+end-do
+
+elapsed := gettime-start
+writeln
+writeln('minial is: ',min_cost,' and YW is ',YW_min,' and YC is ',YC_min)
+writeln
+writeln('running time is',elapsed)
+
+! ================================================================================================
+! Function to calculate the total costs of a selected locations for warehouses and cross-docks
+! ================================================================================================
+function computeTotalCost(YW: set of string, YC: set of string) : real
+  declarations
+    ! Define the model to be called(cost minimial flow)
+    CMF: Model
+  end-declarations
+
+  ! Initialise the ret
+  declarations
+    !the number id of the given locations for warehouses
+    W:set of integer
+    !the number id of the given Locations for cross-docks
+    D:set of integer
+
+  end-declarations
+  
+  W := {}
+  D := {}
+  !change the district ids for selected warehouse to the 'yw'
+  forall(w in YW) do
+    forall(l in Locations) do
+      if(DistrictId(l) = w) then
+        W += {l}
+        break
+      end-if
+    end-do
+  end-do
+  !change the district ids for selected cross-docks to the 'yc'
+  forall(c in YC) do
+    forall(l in Locations) do
+      if(DistrictId(l) = c) then
+        D += {l}
+        break
+      end-if
+    end-do
+  end-do
+
+  ! Write data into memory
+  initializations to "bin:shmem:CMF"
+    filename as "FileName"
+    D as "Selectedcross-docks"
+    W as "Selectedwarehouses"
+  end-initializations
+  
+  ! Compile and run the CWLP model
+  ! ----------------------------------------------------------------------------
+  r := compile("CMF_Selected Locations.mos")
+  load(CMF, "CMF_Selected Locations.bim")
+  run(CMF)
+  wait
+  dropnextevent
+  unload(CMF)
+
+  ! Read the results from the main memory
+  ! ----------------------------------------------------------------------------
+  total_cost := 0.0
+  probstat := 0
+
+  initializations from "bin:shmem:CMF"
+    probstat as "ProblemStatus"
+    total_cost as "TotalCost"
+  end-initializations
+
+  ! Check the solution status and save total cost in 'returned'
+  if(probstat = XPRS_OPT) then
+    returned := total_cost
+  elif(probstat = XPRS_INF) then
+    writeln("The solution is infeasible!")
+  else
+    writeln("Some other problem occured. The Xpress code is: ", probstat)
+  end-if
+  writeln
+  end-function
+  
+
+
+end-model
